@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>配置测试</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #e5e5e5;
+        }
+        .test-container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: #2a2a2a;
+            padding: 20px;
+            border-radius: 8px;
+        }
+        .test-btn {
+            background: #22c55e;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        .test-btn:hover {
+            background: #16a34a;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 10px;
+            background: #333;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="test-container">
+        <h2>配置测试工具</h2>
+        <p>这个工具用于测试配置中心是否正常工作</p>
+
+        <button class="test-btn" onclick="testConfig()">测试配置读取</button>
+        <button class="test-btn" onclick="testProviderSwitch()">测试服务商切换</button>
+
+        <div id="result" class="result">点击按钮开始测试...</div>
+    </div>
+
+    <script>
+        // 模拟配置对象
+        const config = {
+            provider: 'doubao',
+            doubao: {
+                apiKey: '',
+                endpoint: 'https://ark.cn-beijing.volces.com/api/v3/doubao/image_generation',
+                model: 'doubao-image-generation-v2'
+            },
+            openai: {
+                apiKey: '',
+                endpoint: 'https://api.openai.com/v1/images/generations',
+                model: 'dall-e-3'
+            },
+            stability: {
+                apiKey: '',
+                endpoint: 'https://api.stability.ai/v1/generation/stable-diffusion-v1-6/text-to-image',
+                model: 'stable-diffusion-v1-6'
+            }
+        };
+
+        function testConfig() {
+            const result = document.getElementById('result');
+            result.textContent = '当前配置:\n' + JSON.stringify(config, null, 2);
+        }
+
+        function testProviderSwitch() {
+            const result = document.getElementById('result');
+
+            // 测试切换到OpenAI
+            config.provider = 'openai';
+            const openaiConfig = config[config.provider];
+
+            result.textContent = '切换到OpenAI后的配置:\n' +
+                '当前服务商: ' + config.provider + '\n\n' +
+                '当前配置详情:\n' + JSON.stringify(openaiConfig, null, 2);
+        }
+    </script>
+</body>
+</html>

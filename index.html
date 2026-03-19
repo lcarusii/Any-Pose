@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AnyPose - 骨骼预览</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- 左侧面板：原图编辑 -->
+        <div class="panel left-panel">
+            <div class="panel-header">
+                <div class="panel-title">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                        <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                        <polyline points="21 15 16 10 5 21"></polyline>
+                    </svg>
+                    原图编辑
+                </div>
+            </div>
+            <div class="panel-content">
+                <div class="action-buttons">
+                    <button class="action-btn primary" id="uploadBtn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                            <polyline points="17 8 12 3 7 8"></polyline>
+                            <line x1="12" y1="3" x2="12" y2="15"></line>
+                        </svg>
+                        上传原图
+                    </button>
+                    <button class="action-btn" id="resetBtn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+                            <path d="M3 3v5h5"></path>
+                        </svg>
+                        重置骨骼
+                    </button>
+                </div>
+                <input type="file" id="fileInput" accept="image/*" hidden>
+                <div class="canvas-wrapper">
+                    <canvas id="mainCanvas"></canvas>
+                </div>
+                <div class="settings-group">
+                    <div class="setting-item">
+                        <span class="setting-label">线条粗细</span>
+                        <div class="setting-control">
+                            <input type="range" class="slider" id="thicknessSlider" min="5" max="30" value="8">
+                            <span class="setting-value" id="thicknessValue">8PX</span>
+                        </div>
+                    </div>
+                    <div class="setting-item">
+                        <span class="setting-label">颜色主题</span>
+                        <div class="theme-buttons">
+                            <button class="theme-btn active" data-theme="rgb">AI优化</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 中间面板：骨骼预览 -->
+        <div class="panel center-panel">
+            <div class="panel-header">
+                <div class="panel-title">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"></circle>
+                        <path d="M12 1v6m0 6v6M5.64 5.64l4.24 4.24m4.24 4.24l4.24 4.24M1 12h6m6 0h6M5.64 18.36l4.24-4.24m4.24-4.24l4.24-4.24"></path>
+                    </svg>
+                    骨骼预览
+                </div>
+            </div>
+            <div class="panel-content">
+                <div class="preview-canvas-wrapper">
+                    <canvas id="previewCanvas"></canvas>
+                    <div class="preview-placeholder" id="previewPlaceholder">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <circle cx="12" cy="12" r="3"></circle>
+                            <path d="M12 1v6m0 6v6M5.64 5.64l4.24 4.24m4.24 4.24l4.24 4.24M1 12h6m6 0h6M5.64 18.36l4.24-4.24m4.24-4.24l4.24-4.24"></path>
+                        </svg>
+                        <span>暂无骨骼预览</span>
+                    </div>
+                </div>
+                <button class="action-btn primary full-width" id="downloadBtn">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="7 10 12 15 17 10"></polyline>
+                        <line x1="12" y1="15" x2="12" y2="3"></line>
+                    </svg>
+                    下载骨骼图
+                </button>
+                <div class="guide-card">
+                    <div class="guide-title">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <polygon points="10 8 16 12 10 16 10 8"></polygon>
+                        </svg>
+                        使用指引
+                    </div>
+                    <div class="guide-steps">
+                        <p><strong>Step 1:</strong> 上传图片并调整骨骼姿势</p>
+                        <p><strong>Step 2:</strong> 点击下载获取骨骼图</p>
+                        <p><strong>Step 3:</strong> 在右侧使用 AI 生成新图</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 右侧面板：AI生成 -->
+        <div class="panel right-panel">
+            <div class="panel-header">
+                <div class="panel-title">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+                        <path d="M2 17l10 5 10-5"></path>
+                        <path d="M2 12l10 5 10-5"></path>
+                    </svg>
+                    AI 生成
+                </div>
+                <button class="icon-btn" id="apiSettingsBtn" title="配置">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="3"></circle>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                    </svg>
+                </button>
+            </div>
+            <div class="panel-content">
+                <!-- 提示词和控制区域 -->
+                <div class="prompt-section">
+                    <label class="setting-label">生成提示词</label>
+                    <textarea id="promptInput" class="prompt-input" placeholder="严格参考图一的动作姿势，将图二人物的动作替换为图一的姿势，注意手部和腿部的位置，保持图二人物的面部特征、发型、体型、服装完全一致，保持原图的艺术风格、画风、绘画风格完全一致，不要改变画风，不要变成 3D、写实、骷髅或其他风格，全身照，8k分辨率，超高细节，专业质感" rows="4"></textarea>
+                </div>
+                <!-- 提示词模板 -->
+                <div class="prompt-templates">
+                    <span class="setting-label">快速模板</span>
+                    <div class="template-buttons">
+                        <button class="template-btn" data-prompt="严格参考图一的动作姿势，将图二人物的动作替换为图一的姿势，注意手部和腿部的位置，保持图二人物的面部特征、发型、体型、服装完全一致，保持原图的艺术风格、画风、绘画风格完全一致，不要改变画风，不要变成 3D、写实、骷髅或其他风格，全身照，8k分辨率，超高细节，专业质感">姿态迁移</button>
+                        <button class="template-btn" data-prompt="参考图一的姿势，将图二人物的动作替换为图一的姿势，注意手部和腿部位置，保持图二人物的面部五官、发型、体型、服装完全一致，保持原图的艺术风格、画风、绘画风格完全一致，不要改变画风，不要变成 3D、写实、骷髅或其他风格，自然光线，高清细节，高画质">保持外貌</button>
+                        <button class="template-btn" data-prompt="严格参考图一的姿势，将图二人物的动作替换为图一的姿势，注意手部和腿部位置，图二是同一个角色，保持特征完全一致，保持原图的艺术风格、画风、绘画风格完全一致，不要改变画风，不要变成 3D、写实、骷髅或其他风格，新的姿势，自然场景，全身照，高质量，高画质">同一人新姿势</button>
+                    </div>
+                </div>
+                <button id="previewSkeletonBtn" class="action-btn full-width" style="margin-top: 12px;">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                        <circle cx="12" cy="12" r="3"></circle>
+                    </svg>
+                    预览骨骼图
+                </button>
+                <button id="startGenerateBtn" class="action-btn glow full-width" style="margin-top: 12px;">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+                        <path d="M2 17l10 5 10-5"></path>
+                        <path d="M2 12l10 5 10-5"></path>
+                    </svg>
+                    开始 AI 生成
+                </button>
+
+                <!-- 生成状态显示 -->
+                <div id="generationStatus" class="generation-status" style="display: none; margin-top: 20px;">
+                    <div class="loading-spinner"></div>
+                    <span>正在生成中...</span>
+                </div>
+
+                <!-- 生成结果输出窗口 -->
+                <div id="generationResult" class="generation-result" style="margin-top: 20px;">
+                    <div class="output-window-header" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+                        <span class="setting-label">生成结果</span>
+                    </div>
+                    <div class="output-window" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border: 2px solid #5a67d8; border-radius: 12px; min-height: 300px; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+                        <img id="resultImage" class="result-image" style="max-width: 100%; max-height: 100%; display: none;">
+                        <span id="resultPlaceholder" style="color: rgba(255,255,255,0.7); text-align: center;">
+                            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="margin: 0 auto 10px; opacity: 0.7;">
+                                <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+                                <path d="M2 17l10 5 10-5"></path>
+                                <path d="M2 12l10 5 10-5"></path>
+                            </svg>
+                            <br>点击「开始 AI 生成」
+                        </span>
+                    </div>
+                    <button id="downloadResult" class="action-btn primary full-width" style="display: none; margin-top: 12px;">下载生成结果</button>
+                </div>
+
+                <!-- 历史记录 -->
+                <div class="history-section" style="margin-top: 24px;">
+                    <div class="history-header" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+                        <span class="setting-label">历史记录</span>
+                        <button id="clearHistoryBtn" class="icon-btn" title="清空历史" style="padding: 4px; border: none; background: none; cursor: pointer; color: #888;">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="3,6 5,6 21,6"></polyline>
+                                <path d="M19,6v14a2,2,0,0,1-2,2H7a2,2,0,0,1-2-2V6m3,0V4a2,2,0,0,1,2-2h4a2,2,0,0,1,2,2v2"></path>
+                            </svg>
+                        </button>
+                    </div>
+                    <div id="historyList" class="history-list" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; max-height: 320px; overflow-y: auto;">
+                        <div id="historyPlaceholder" style="grid-column: 1/-1; text-align: center; color: #888; font-size: 12px; padding: 20px;">
+                            暂无历史记录
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Toast 通知容器 -->
+            <div id="toastContainer" class="toast-container"></div>
+        </div>
+    </div>
+
+    <!-- API设置对话框 -->
+    <div id="apiSettingsModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>配置中心</h3>
+                <button class="modal-close" id="modalCloseBtn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="providerSelect">AI服务商:</label>
+                    <select id="providerSelect" class="provider-select">
+                        <option value="doubao">豆包AI</option>
+                        <option value="openai">OpenAI</option>
+                        <option value="stability">Stability AI</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="apiKeyInput">API密钥:</label>
+                    <input type="password" id="apiKeyInput" class="api-key-input" placeholder="请输入API密钥">
+                    <small class="form-help">密钥仅在当前会话中保存，关闭浏览器后自动清除</small>
+                </div>
+
+                <div class="form-group">
+                    <label for="endpointInput">API端点:</label>
+                    <input type="text" id="endpointInput" class="api-key-input" placeholder="API端点URL">
+                </div>
+
+                <div class="form-group">
+                    <label for="modelInput">模型名称:</label>
+                    <select id="modelInput" class="provider-select">
+                        <option value="doubao-seedream-5-0-260128">doubao-seedream-5-0-260128</option>
+                        <option value="doubao-seedream-4-5-251128">doubao-seedream-4-5-251128</option>
+                    </select>
+                </div>
+
+                <div class="config-info">
+                    <h4>当前配置信息:</h4>
+                    <div class="config-details">
+                        <p><strong>服务商:</strong> <span id="currentProvider">豆包AI</span></p>
+                        <p><strong>模型:</strong> <span id="currentModel">doubao-seedream-5-0-260128</span></p>
+                        <p><strong>状态:</strong> <span id="configStatus" class="status-indicator">未配置</span></p>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="testApiBtn" class="test-btn">测试连接</button>
+                <button id="saveApiKeyBtn" class="save-btn">保存配置</button>
+                <button id="cancelApiKeyBtn" class="cancel-btn">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 骨骼图预览对话框 -->
+    <div id="skeletonPreviewModal" class="modal skeleton-preview-modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>骨骼图预览</h3>
+                <button class="modal-close" id="skeletonPreviewCloseBtn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="preview-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                    <div class="preview-item">
+                        <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #666;">图一：骨骼姿势参考图</h4>
+                        <div class="preview-box" style="background: #000; border: 1px solid #ddd; border-radius: 8px; min-height: 300px; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+                            <img id="previewSkeletonImage" style="max-width: 100%; max-height: 400px; display: none;">
+                            <span id="previewSkeletonPlaceholder" style="color: #666;">暂无骨骼图</span>
+                        </div>
+                    </div>
+                    <div class="preview-item">
+                        <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #666;">图二：人物参考图</h4>
+                        <div class="preview-box" style="background: #f5f5f5; border: 1px solid #ddd; border-radius: 8px; min-height: 300px; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+                            <img id="previewOriginalImage" style="max-width: 100%; max-height: 400px; display: none;">
+                            <span id="previewOriginalPlaceholder" style="color: #666;">暂无原图</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="preview-overlay" style="margin-top: 20px;">
+                    <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #666;">叠加对比</h4>
+                    <div class="preview-box" style="background: #000; border: 1px solid #ddd; border-radius: 8px; min-height: 300px; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative;">
+                        <canvas id="previewOverlayCanvas" style="max-width: 100%; max-height: 400px; display: none;"></canvas>
+                        <span id="previewOverlayPlaceholder" style="color: #666;">暂无对比图</span>
+                    </div>
+                </div>
+                <div class="debug-info" style="margin-top: 15px; padding: 10px; background: #f5f5f5; border-radius: 8px; font-family: monospace; font-size: 12px;">
+                    <p id="debugInfo">暂无调试信息</p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="closeSkeletonPreviewBtn" class="cancel-btn">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

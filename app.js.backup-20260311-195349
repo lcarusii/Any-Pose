@@ -1,0 +1,1860 @@
+// AnyPose 主应用逻辑 - 修复版本
+
+// 生成参数默认值
+const DEFAULT_GENERATION_PARAMS = {
+    guidance_scale: 7.5,
+    num_inference_steps: 30,
+    strength: 0.8,
+    seed: -1 // 随机种子
+};
+
+// 提示词最大长度限制
+const MAX_PROMPT_LENGTH = 500;
+
+class AnyPoseApp {
+    constructor() {
+        // Canvas
+        this.mainCanvas = document.getElementById('mainCanvas');
+        this.previewCanvas = document.getElementById('previewCanvas');
+        this.mainCtx = this.mainCanvas.getContext('2d');
+        this.previewCtx = this.previewCanvas.getContext('2d');
+
+        // 状态
+        this.currentPoseData = null;
+        this.originalPoseData = null;
+        this.uploadedImage = null;
+        this.lastImageInfo = null;
+        this.zoom = 1;
+        this.selectedPoint = null;
+        this.lineThickness = 8;
+        this.colorTheme = 'rgb';
+
+        // AI生成状态
+        this.isGenerating = false;
+        this.apiKey = ''; // 用户API密钥（会话级存储）
+        this.lastGenerationResult = null;
+
+        // 配置中心
+        this.config = {
+            provider: 'doubao', // 默认服务商
+            doubao: {
+                apiKey: '',
+                endpoint: 'https://ark.cn-beijing.volces.com/api/v3/doubao/image_generation',
+                model: 'doubao-image-generation-v2'
+            },
+            openai: {
+                apiKey: '',
+                endpoint: 'https://api.openai.com/v1/images/generations',
+                model: 'dall-e-3'
+            },
+            // 可以添加更多服务商
+            stability: {
+                apiKey: '',
+                endpoint: 'https://api.stability.ai/v1/generation/stable-diffusion-v1-6/text-to-image',
+                model: 'stable-diffusion-v1-6'
+            }
+        };
+
+        // 上传状态管理
+        this.isProcessing = false;
+
+        // 3D 旋转角度
+        this.rotationX = 0;
+        this.rotationY = 0;
+        this.rotationZ = 0;
+        this.cubeDragging = false;
+        this.focalLength = 500; // 透视投影焦距
+
+        this.initCanvas();
+        this.initEventListeners();
+        this.initMediaPipe();
+        this.initConfigUI();
+        this.loadDefaultPose();
+    }
+
+    initCanvas() {
+        // 主画布
+        const mainRect = this.mainCanvas.getBoundingClientRect();
+        this.mainCanvas.width = mainRect.width * window.devicePixelRatio;
+        this.mainCanvas.height = mainRect.height * window.devicePixelRatio;
+        this.mainCtx.scale(window.devicePixelRatio, window.devicePixelRatio);
+        this.mainCanvasWidth = mainRect.width;
+        this.mainCanvasHeight = mainRect.height;
+
+        // 预览画布
+        const previewRect = this.previewCanvas.getBoundingClientRect();
+        this.previewCanvas.width = previewRect.width * window.devicePixelRatio;
+        this.previewCanvas.height = previewRect.height * window.devicePixelRatio;
+        this.previewCtx.scale(window.devicePixelRatio, window.devicePixelRatio);
+        this.previewCanvasWidth = previewRect.width;
+        this.previewCanvasHeight = previewRect.height;
+    }
+
+    destroyMediaPipe() {
+        if (this.pose) {
+            try {
+                // 关闭并清理旧的 pose 实例
+                this.pose.close();
+            } catch (e) {
+                // 忽略关闭错误
+            }
+            this.pose = null;
+        }
+    }
+
+    initMediaPipe() {
+        // 首先清理任何现有的实例
+        this.destroyMediaPipe();
+
+        try {
+            if (typeof window.Pose === 'undefined') {
+                this.pose = null;
+                return;
+            }
+            this.pose = new window.Pose({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+            });
+            this.pose.setOptions({
+                modelComplexity: 1,
+                smoothLandmarks: true,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+            this.pose.onResults((results) => this.onPoseResults(results));
+        } catch (error) {
+            this.pose = null;
+        }
+    }
+
+    initEventListeners() {
+        // 上传按钮
+        const uploadBtn = document.getElementById('uploadBtn');
+        const fileInput = document.getElementById('fileInput');
+        if (uploadBtn && fileInput) {
+            uploadBtn.addEventListener('click', () => fileInput.click());
+            fileInput.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    this.handleImageUpload(file);
+                    // 清空 input 以允许重复上传同名文件
+                    e.target.value = '';
+                }
+            });
+        }
+
+        // 面板折叠
+        const panelHeader = document.getElementById('panelHeader');
+        const panelCard = document.querySelector('.panel-card');
+        if (panelHeader && panelCard) {
+            panelHeader.addEventListener('click', () => {
+                panelCard.classList.toggle('collapsed');
+            });
+        }
+
+        // 旋转滑块
+        ['rotateX', 'rotateY', 'rotateZ'].forEach((id) => {
+            const slider = document.getElementById(id);
+            const valueEl = document.getElementById(id + 'Value');
+            if (slider) {
+                slider.addEventListener('input', (e) => {
+                    const angle = parseFloat(e.target.value);
+                    if (id === 'rotateX') this.rotationX = angle * Math.PI / 180;
+                    if (id === 'rotateY') this.rotationY = angle * Math.PI / 180;
+                    if (id === 'rotateZ') this.rotationZ = angle * Math.PI / 180;
+                    if (valueEl) valueEl.textContent = angle + '°';
+                    this.updateCubeRotation();
+                    this.render();
+                });
+            }
+        });
+
+        // 缩放滑块
+        const zoomSlider = document.getElementById('zoomSlider');
+        const zoomValue = document.getElementById('zoomValue');
+        if (zoomSlider) {
+            zoomSlider.addEventListener('input', (e) => {
+                this.zoom = parseFloat(e.target.value) / 100;
+                if (zoomValue) zoomValue.textContent = e.target.value + '%';
+                this.render();
+            });
+        }
+
+        // 线条粗细
+        const thicknessSlider = document.getElementById('thicknessSlider');
+        const thicknessValue = document.getElementById('thicknessValue');
+        if (thicknessSlider) {
+            thicknessSlider.value = this.lineThickness;
+            if (thicknessValue) thicknessValue.textContent = this.lineThickness + 'PX';
+            thicknessSlider.addEventListener('input', (e) => {
+                this.lineThickness = parseInt(e.target.value);
+                if (thicknessValue) thicknessValue.textContent = this.lineThickness + 'PX';
+                this.render();
+            });
+        }
+
+        // 颜色主题
+        document.querySelectorAll('.theme-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('active'));
+                e.target.classList.add('active');
+                this.colorTheme = e.target.dataset.theme;
+                this.render();
+            });
+        });
+
+        // 下载按钮
+        const downloadBtn = document.getElementById('downloadBtn');
+        if (downloadBtn) {
+            downloadBtn.addEventListener('click', () => this.exportImage());
+        }
+
+        // AI生成按钮
+        const aiGenerateBtn = document.getElementById('aiGenerateBtn');
+        if (aiGenerateBtn) {
+            aiGenerateBtn.addEventListener('click', () => this.handleAIGenerate());
+        }
+
+        // API设置按钮
+        const apiSettingsBtn = document.getElementById('apiSettingsBtn');
+        if (apiSettingsBtn) {
+            apiSettingsBtn.addEventListener('click', () => this.showApiSettings());
+        }
+
+        // API设置对话框按钮
+        const modalCloseBtn = document.getElementById('modalCloseBtn');
+        const saveApiKeyBtn = document.getElementById('saveApiKeyBtn');
+        const cancelApiKeyBtn = document.getElementById('cancelApiKeyBtn');
+        const apiKeyInput = document.getElementById('apiKeyInput');
+        const providerSelect = document.getElementById('providerSelect');
+        const testApiBtn = document.getElementById('testApiBtn');
+        const endpointInput = document.getElementById('endpointInput');
+        const modelInput = document.getElementById('modelInput');
+
+        if (modalCloseBtn) {
+            modalCloseBtn.addEventListener('click', () => this.hideApiSettings());
+        }
+
+        if (saveApiKeyBtn) {
+            saveApiKeyBtn.addEventListener('click', () => this.saveApiKey());
+        }
+
+        if (cancelApiKeyBtn) {
+            cancelApiKeyBtn.addEventListener('click', () => this.hideApiSettings());
+        }
+
+        if (apiKeyInput) {
+            apiKeyInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    this.saveApiKey();
+                }
+            });
+        }
+
+        if (providerSelect) {
+            providerSelect.addEventListener('change', (e) => this.switchProvider(e.target.value));
+        }
+
+        if (testApiBtn) {
+            testApiBtn.addEventListener('click', () => this.testApiConnection());
+        }
+
+        if (endpointInput) {
+            endpointInput.addEventListener('change', (e) => this.updateConfig('endpoint', e.target.value));
+        }
+
+        if (modelInput) {
+            modelInput.addEventListener('change', (e) => this.updateConfig('model', e.target.value));
+        }
+
+        // 重置按钮
+        const resetBtn = document.getElementById('resetBtn');
+        if (resetBtn) {
+            resetBtn.addEventListener('click', () => this.resetPose());
+        }
+
+        // 重置旋转视角按钮
+        const resetRotationBtn = document.getElementById('resetRotationBtn');
+        if (resetRotationBtn) {
+            resetRotationBtn.addEventListener('click', () => this.resetRotation());
+        }
+
+        // 预设视角按钮
+        document.querySelectorAll('.preset-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const view = e.target.dataset.view;
+                if (view) this.setPresetView(view);
+            });
+        });
+
+        // 立方体拖动
+        const cube3d = document.getElementById('cube3d');
+        if (cube3d) {
+            cube3d.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                this.cubeDragging = true;
+                this.cubeStartX = e.clientX;
+                this.cubeStartY = e.clientY;
+                this.cubeStartRotX = this.rotationX;
+                this.cubeStartRotY = this.rotationY;
+            });
+        }
+
+        document.addEventListener('mousemove', (e) => {
+            if (this.cubeDragging) {
+                const dx = e.clientX - this.cubeStartX;
+                const dy = e.clientY - this.cubeStartY;
+                this.rotationY = this.cubeStartRotY + dx * 0.01;
+                this.rotationX = this.cubeStartRotX + dy * 0.01;
+                this.updateSliders();
+                this.updateCubeRotation();
+                this.render();
+            }
+        });
+
+        document.addEventListener('mouseup', () => {
+            this.cubeDragging = false;
+        });
+
+        // 主画布鼠标事件
+        this.mainCanvas.addEventListener('mousedown', (e) => this.onMouseDown(e));
+        this.mainCanvas.addEventListener('mousemove', (e) => this.onMouseMove(e));
+        this.mainCanvas.addEventListener('mouseup', () => this.onMouseUp());
+
+        // 窗口大小变化
+        window.addEventListener('resize', () => {
+            this.initCanvas();
+            this.render();
+        });
+    }
+
+    updateSliders() {
+        const rotateX = document.getElementById('rotateX');
+        const rotateY = document.getElementById('rotateY');
+        const rotateZ = document.getElementById('rotateZ');
+
+        const degX = Math.round(this.rotationX * 180 / Math.PI);
+        const degY = Math.round(this.rotationY * 180 / Math.PI);
+        const degZ = Math.round(this.rotationZ * 180 / Math.PI);
+
+        if (rotateX) {
+            rotateX.value = degX;
+            const val = document.getElementById('rotateXValue');
+            if (val) val.textContent = degX + '°';
+        }
+        if (rotateY) {
+            rotateY.value = degY;
+            const val = document.getElementById('rotateYValue');
+            if (val) val.textContent = degY + '°';
+        }
+        if (rotateZ) {
+            rotateZ.value = degZ;
+            const val = document.getElementById('rotateZValue');
+            if (val) val.textContent = degZ + '°';
+        }
+    }
+
+    updateCubeRotation() {
+        const cube3d = document.getElementById('cube3d');
+        if (cube3d) {
+            const degX = this.rotationX * 180 / Math.PI;
+            const degY = this.rotationY * 180 / Math.PI;
+            cube3d.style.transform = `rotateX(${degX}deg) rotateY(${degY}deg)`;
+        }
+    }
+
+    handleImageUpload(file) {
+        // 【关键】立即清除所有可能导致不匹配的状态
+        // 清除骨骼，这样在新骨骼准备好之前不会在新图片上绘制旧骨骼
+        this.currentPoseData = null;
+        this.lastImageInfo = null;
+        this.boneLengths = null;
+        this.isProcessing = true;
+
+        // 更新占位符显示（显示"暂无骨骼预览"）
+        this.updatePlaceholderVisibility();
+
+        // 【关键】每次上传新图片时，完全重新初始化 MediaPipe Pose！
+        // 这样可以确保没有旧的回调能够触发并干扰
+        this.initMediaPipe();
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const img = new Image();
+            img.onload = () => {
+                // 立即设置 uploadedImage，让用户看到新图片
+                this.uploadedImage = img;
+
+                if (this.pose) {
+                    // 发送到新的（干净的）pose 实例
+                    this.pose.send({ image: img });
+                }
+
+                // 立即渲染，显示新图片但不显示骨骼
+                this.render();
+            };
+            img.src = e.target.result;
+        };
+        reader.readAsDataURL(file);
+    }
+
+    onPoseResults(results) {
+        // 由于我们在每次上传时重新初始化 MediaPipe，
+        // 这个结果一定是来自最新的图片！无需检查 ID。
+
+        if (results.poseLandmarks) {
+            this.isProcessing = false;
+            const mp = results.poseLandmarks;
+
+            const getPoint = (index, defaultX, defaultY) => {
+                if (mp[index]) {
+                    let x = mp[index].x;
+                    let y = mp[index].y;
+                    const visibility = mp[index].visibility || 1;
+                    const z = mp[index].z || 0;
+
+                    if (x < 0 || x > 1 || y < 0 || y > 1 || !isFinite(x) || !isFinite(y)) {
+                        return { x: defaultX, y: defaultY, z: 0, visibility: 1 };
+                    }
+                    return { x, y, z, visibility };
+                }
+                return { x: defaultX, y: defaultY, z: 0, visibility: 1 };
+            };
+
+            const interpolatePoint = (p1, p2, t) => {
+                return {
+                    x: p1.x + (p2.x - p1.x) * t,
+                    y: p1.y + (p2.y - p1.y) * t,
+                    z: (p1.z + p2.z) / 2,
+                    visibility: Math.min(p1.visibility, p2.visibility)
+                };
+            };
+
+            // OpenPose 20点结构
+            // 0: 鼻子, 1: 左眼内, 2: 左眼外, 3: 右眼内, 4: 右眼外
+            const nose = getPoint(0, 0.5, 0.22);
+            const leftEyeIn = getPoint(1, 0.47, 0.2);
+            const leftEyeOut = getPoint(2, 0.44, 0.21);
+            const rightEyeIn = getPoint(4, 0.53, 0.2);
+            const rightEyeOut = getPoint(5, 0.56, 0.21);
+
+            const leftShoulder = getPoint(11, 0.4, 0.3);
+            const rightShoulder = getPoint(12, 0.6, 0.3);
+            const neck = interpolatePoint(leftShoulder, rightShoulder, 0.5);
+            neck.y -= 0.02;
+
+            const leftElbow = getPoint(13, 0.3, 0.4);
+            const leftWrist = getPoint(15, 0.22, 0.5);
+            const rightElbow = getPoint(14, 0.7, 0.4);
+            const rightWrist = getPoint(16, 0.78, 0.5);
+
+            const leftHip = getPoint(23, 0.43, 0.55);
+            const rightHip = getPoint(24, 0.57, 0.55);
+            const pelvis = interpolatePoint(leftHip, rightHip, 0.5);
+
+            const leftKnee = getPoint(25, 0.42, 0.7);
+            const leftAnkle = getPoint(27, 0.4, 0.88);
+            const rightKnee = getPoint(26, 0.58, 0.7);
+            const rightAnkle = getPoint(28, 0.6, 0.88);
+
+            this.currentPoseData = [
+                nose,           // 0: 鼻子
+                leftEyeIn,      // 1: 左眼内
+                leftEyeOut,     // 2: 左眼外
+                rightEyeIn,     // 3: 右眼内
+                rightEyeOut,    // 4: 右眼外
+                leftShoulder,   // 5: 左肩
+                leftElbow,      // 6: 左肘
+                leftWrist,      // 7: 左手腕
+                rightShoulder,  // 8: 右肩
+                rightElbow,     // 9: 右肘
+                rightWrist,     // 10: 右手腕
+                leftHip,        // 11: 左髋
+                leftKnee,       // 12: 左膝
+                leftAnkle,      // 13: 左脚踝
+                rightHip,       // 14: 右髋
+                rightKnee,      // 15: 右膝
+                rightAnkle,     // 16: 右脚踝
+                neck,           // 17: 脖子
+                pelvis          // 18: 骨盆
+            ];
+
+            this.currentPoseData.forEach((p) => {
+                if (p.x < 0.05) p.x = 0.05;
+                if (p.x > 0.95) p.x = 0.95;
+                if (p.y < 0.05) p.y = 0.05;
+                if (p.y > 0.95) p.y = 0.95;
+            });
+
+            this.originalPoseData = this.currentPoseData.map(p => ({ ...p }));
+
+            // 识别完成后立刻计算并锁定所有肢体的长度
+            this.calculateBoneLengths();
+
+            // 更新占位符显示（隐藏占位符）
+            this.updatePlaceholderVisibility();
+
+            this.render();
+        }
+    }
+
+    updatePlaceholderVisibility() {
+        const placeholder = document.getElementById('previewPlaceholder');
+        if (!placeholder) return;
+
+        if (this.currentPoseData) {
+            // 有骨骼数据，隐藏占位符
+            placeholder.style.display = 'none';
+        } else {
+            // 没有骨骼数据，显示占位符
+            placeholder.style.display = 'block';
+        }
+    }
+
+    loadDefaultPose() {
+        this.currentPoseData = this.getPresetPose('standing');
+
+        // 加载预设姿势后也要锁定长度
+        this.calculateBoneLengths();
+
+        this.updatePlaceholderVisibility();
+        this.render();
+    }
+
+    getPresetPose(presetName) {
+        const cx = 0.5, cy = 0.12;
+        const shoulderWidth = 0.28;
+        const torsoLength = 0.3;
+        const armLength = 0.45;
+        const legLength = 0.55;
+        const hipWidth = 0.16;
+        const eyeOffsetX = 0.05;
+        const eyeOffsetY = 0.03;
+
+        return [
+            { x: cx, y: cy, z: 0 },           // 0: 鼻子
+            { x: cx - eyeOffsetX * 0.6, y: cy - eyeOffsetY, z: 0 }, // 1: 左眼内
+            { x: cx - eyeOffsetX, y: cy - eyeOffsetY * 0.8, z: 0 }, // 2: 左眼外
+            { x: cx + eyeOffsetX * 0.6, y: cy - eyeOffsetY, z: 0 }, // 3: 右眼内
+            { x: cx + eyeOffsetX, y: cy - eyeOffsetY * 0.8, z: 0 }, // 4: 右眼外
+            { x: cx - shoulderWidth / 2, y: cy + 0.12, z: 0 }, // 5: 左肩
+            { x: cx - shoulderWidth / 2 - 0.02, y: cy + 0.12 + armLength * 0.5, z: 0 }, // 6: 左肘
+            { x: cx - shoulderWidth / 2 + 0.02, y: cy + 0.12 + armLength, z: 0 }, // 7: 左手腕
+            { x: cx + shoulderWidth / 2, y: cy + 0.12, z: 0 }, // 8: 右肩
+            { x: cx + shoulderWidth / 2 + 0.02, y: cy + 0.12 + armLength * 0.5, z: 0 }, // 9: 右肘
+            { x: cx + shoulderWidth / 2 - 0.02, y: cy + 0.12 + armLength, z: 0 }, // 10: 右手腕
+            { x: cx - hipWidth / 2, y: cy + 0.12 + torsoLength, z: 0 }, // 11: 左髋
+            { x: cx - hipWidth / 2 + 0.01, y: cy + 0.12 + torsoLength + legLength * 0.5, z: 0 }, // 12: 左膝
+            { x: cx - hipWidth / 2 - 0.02, y: cy + 0.12 + torsoLength + legLength, z: 0 }, // 13: 左脚踝
+            { x: cx + hipWidth / 2, y: cy + 0.12 + torsoLength, z: 0 }, // 14: 右髋
+            { x: cx + hipWidth / 2 - 0.01, y: cy + 0.12 + torsoLength + legLength * 0.5, z: 0 }, // 15: 右膝
+            { x: cx + hipWidth / 2 + 0.02, y: cy + 0.12 + torsoLength + legLength, z: 0 }, // 16: 右脚踝
+            { x: cx, y: cy + 0.12, z: 0 }, // 17: 脖子
+            { x: cx, y: cy + 0.12 + torsoLength, z: 0 } // 18: 骨盆
+        ].map(p => ({ ...p, visibility: 1 }));
+    }
+
+    onMouseDown(e) {
+        const rect = this.mainCanvas.getBoundingClientRect();
+        this.selectedPoint = null;
+        if (!this.currentPoseData) return;
+
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+
+        for (let i = 0; i < this.currentPoseData.length; i++) {
+            const p = this.currentPoseData[i];
+            let sx, sy;
+
+            if (this.lastImageInfo) {
+                const { offsetX, offsetY, drawWidth, drawHeight } = this.lastImageInfo;
+                sx = offsetX + p.x * drawWidth;
+                sy = offsetY + p.y * drawHeight;
+            } else {
+                const scale = Math.min(this.mainCanvasWidth, this.mainCanvasHeight) * this.zoom * 0.5;
+                const centerX = this.mainCanvasWidth / 2;
+                const centerY = this.mainCanvasHeight / 2;
+                sx = centerX + (p.x - 0.5) * scale;
+                sy = centerY + (p.y - 0.35) * scale;
+            }
+
+            const dist = Math.sqrt((mouseX - sx) ** 2 + (mouseY - sy) ** 2);
+            if (dist < 20) {
+                this.selectedPoint = i;
+                break;
+            }
+        }
+    }
+
+    onMouseMove(e) {
+        const rect = this.mainCanvas.getBoundingClientRect();
+        if (this.selectedPoint !== null && this.currentPoseData) {
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            let targetX, targetY;
+
+            if (this.lastImageInfo) {
+                const { offsetX, offsetY, drawWidth, drawHeight } = this.lastImageInfo;
+                targetX = (mouseX - offsetX) / drawWidth;
+                targetY = (mouseY - offsetY) / drawHeight;
+            } else {
+                const scale = Math.min(this.mainCanvasWidth, this.mainCanvasHeight) * this.zoom * 0.5;
+                const centerX = this.mainCanvasWidth / 2;
+                const centerY = this.mainCanvasHeight / 2;
+                targetX = (mouseX - centerX) / scale + 0.5;
+                targetY = (mouseY - centerY) / scale + 0.35;
+            }
+
+            // 【核心变化】：不再粗暴地直接赋值 p.x 和 p.y
+            // 而是把目标位置丢给 IK 算法去计算联动
+            this.solveIK(this.selectedPoint, targetX, targetY);
+
+            this.render();
+            this.mainCanvas.style.cursor = 'grabbing';
+        } else {
+            this.mainCanvas.style.cursor = 'default';
+        }
+    }
+
+    onMouseUp() {
+        this.selectedPoint = null;
+        this.mainCanvas.style.cursor = 'default';
+    }
+
+    // ========== 3D 变换相关方法 ==========
+
+    /**
+     * 将 2D 归一化坐标转换为 3D 空间坐标
+     * 以画面中心为原点，x 向右，y 向上，z 向屏幕外
+     * @param {object} lm -  landmark 点
+     * @param {number} index - 点的索引（用于分配解剖学深度）
+     */
+    normalizeTo3D(lm, index = 0, centerX = 0.5, centerY = 0.35) {
+        // 基于人体解剖结构的预设 z 值（深度）
+        // 正值 = 靠前（向屏幕外），负值 = 靠后（向屏幕内）
+        const anatomyZ = [
+            0,       // 0: 鼻子
+            0.02,    // 1: 左眼内
+            0.02,    // 2: 左眼外
+            0.02,    // 3: 右眼内
+            0.02,    // 4: 右眼外
+            -0.15,   // 5: 左肩（稍靠后）
+            -0.2,    // 6: 左肘
+            -0.25,   // 7: 左手腕
+            0.15,    // 8: 右肩（稍靠前）
+            0.2,     // 9: 右肘
+            0.25,    // 10: 右手腕
+            -0.1,    // 11: 左髋
+            -0.15,   // 12: 左膝
+            -0.2,    // 13: 左脚踝
+            0.1,     // 14: 右髋
+            0.15,    // 15: 右膝
+            0.2,     // 16: 右脚踝
+            0.1,     // 17: 脖子
+            0.05     // 18: 骨盆
+        ];
+
+        const z = anatomyZ[index] || 0;
+
+        return {
+            x: (lm.x - centerX) * 2,    // -1 到 1
+            y: -(lm.y - centerY) * 2,   // -1 到 1（y 轴向上）
+            z: z
+        };
+    }
+
+    /**
+     * 应用 3D 旋转到点
+     */
+    rotatePoint3D(point3D) {
+        let { x, y, z } = point3D;
+
+        // X 轴旋转（俯仰）
+        const cosX = Math.cos(this.rotationX);
+        const sinX = Math.sin(this.rotationX);
+        const y1 = y * cosX - z * sinX;
+        const z1 = y * sinX + z * cosX;
+
+        // Y 轴旋转（偏航）
+        const cosY = Math.cos(this.rotationY);
+        const sinY = Math.sin(this.rotationY);
+        const x2 = x * cosY + z1 * sinY;
+        const z2 = -x * sinY + z1 * cosY;
+
+        // Z 轴旋转（翻滚）
+        const cosZ = Math.cos(this.rotationZ);
+        const sinZ = Math.sin(this.rotationZ);
+        const x3 = x2 * cosZ - y1 * sinZ;
+        const y3 = x2 * sinZ + y1 * cosZ;
+
+        return { x: x3, y: y3, z: z2 };
+    }
+
+    /**
+     * 透视投影：将 3D 点投影到 2D 平面
+     */
+    projectTo2D(point3D, scale = 1) {
+        const { x, y, z } = point3D;
+        // 透视缩放：越远越小
+        const perspectiveScale = this.focalLength / (this.focalLength + z * 100);
+        return {
+            x: x * perspectiveScale * scale,
+            y: y * perspectiveScale * scale,
+            scale: perspectiveScale
+        };
+    }
+
+    /**
+     * 获取 3D 变换后的位置（用于绘制）
+     * 返回 { x, y, depthScale }，depthScale 用于调整线条粗细
+     * @param {object} lm - landmark 点
+     * @param {number} index - 点的索引
+     * @param {boolean} use3D - 是否使用 3D 变换
+     */
+    getTransformedPos(lm, index = 0, use3D = true) {
+        if (!use3D || (this.rotationX === 0 && this.rotationY === 0 && this.rotationZ === 0)) {
+            return { x: lm.x, y: lm.y, depthScale: 1 };
+        }
+
+        // 转换到 3D 空间（传入索引以获取解剖学深度）
+        const p3d = this.normalizeTo3D(lm, index);
+        // 应用旋转
+        const rotated = this.rotatePoint3D(p3d);
+        // 透视投影
+        const projected = this.projectTo2D(rotated);
+
+        // 转换回画布坐标
+        return {
+            x: 0.5 + projected.x / 2,
+            y: 0.35 - projected.y / 2,
+            depthScale: projected.scale
+        };
+    }
+
+    getThemeColors() {
+        if (this.colorTheme === 'bw') {
+            return {
+                head: '#ffffff',
+                torso: '#ffffff',
+                left: '#ffffff',
+                right: '#ffffff',
+                border: '#000000'
+            };
+        } else if (this.colorTheme === 'solid') {
+            return {
+                head: '#ffffff',
+                torso: '#ffffff',
+                left: '#ffffff',
+                right: '#ffffff',
+                border: '#22c55e'
+            };
+        }
+        return {
+            head: '#22c55e',
+            torso: '#22c55e',
+            left: '#3b82f6',
+            right: '#ef4444',
+            border: '#ffffff'
+        };
+    }
+
+    render() {
+        // 更新占位符显示状态，确保与 currentPoseData 同步
+        this.updatePlaceholderVisibility();
+        // 渲染主画布（左侧）
+        this.renderMainCanvas();
+        // 渲染预览画布（右侧）
+        this.renderPreviewCanvas();
+    }
+
+    renderMainCanvas() {
+        const ctx = this.mainCtx;
+        const width = this.mainCanvasWidth;
+        const height = this.mainCanvasHeight;
+
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = '#1a1a1a';
+        ctx.fillRect(0, 0, width, height);
+
+        let imageInfo = null;
+
+        // 如果有上传的图片，先绘制图片
+        if (this.uploadedImage) {
+            imageInfo = this.drawImageCentered(ctx, this.uploadedImage, width, height);
+            this.lastImageInfo = imageInfo;
+        } else {
+            // 绘制网格
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
+            ctx.lineWidth = 1;
+            const gridSize = 40 * this.zoom;
+            for (let x = 0; x < width; x += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, height);
+                ctx.stroke();
+            }
+            for (let y = 0; y < height; y += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(width, y);
+                ctx.stroke();
+            }
+        }
+
+        if (this.currentPoseData) {
+            this.drawSkeleton(ctx, this.currentPoseData, width, height, true, true, imageInfo);
+        }
+    }
+
+    drawImageCentered(ctx, img, canvasWidth, canvasHeight) {
+        const imgRatio = img.width / img.height;
+        const canvasRatio = canvasWidth / canvasHeight;
+
+        let drawWidth, drawHeight, offsetX, offsetY;
+
+        if (imgRatio > canvasRatio) {
+            drawWidth = canvasWidth;
+            drawHeight = canvasWidth / imgRatio;
+            offsetX = 0;
+            offsetY = (canvasHeight - drawHeight) / 2;
+        } else {
+            drawHeight = canvasHeight;
+            drawWidth = canvasHeight * imgRatio;
+            offsetX = (canvasWidth - drawWidth) / 2;
+            offsetY = 0;
+        }
+
+        ctx.drawImage(img, offsetX, offsetY, drawWidth, drawHeight);
+
+        return { offsetX, offsetY, drawWidth, drawHeight };
+    }
+
+    renderPreviewCanvas() {
+        const ctx = this.previewCtx;
+        const width = this.previewCanvasWidth;
+        const height = this.previewCanvasHeight;
+
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, width, height);
+
+        if (this.currentPoseData) {
+            this.drawPreviewSkeleton(ctx, this.currentPoseData, width, height);
+        }
+    }
+
+    drawSkeleton(ctx, landmarks, width, height, interactive, useFullSize, imageInfo) {
+        const use3D = !imageInfo; // 只有在没有上传图片时才使用 3D 效果
+        let transformedLandmarks = null;
+
+        // 如果使用 3D，先对所有点进行变换
+        if (use3D && landmarks) {
+            transformedLandmarks = landmarks.map((lm, index) => {
+                const t = this.getTransformedPos(lm, index);
+                return { ...lm, x: t.x, y: t.y, _depthScale: t.depthScale };
+            });
+        } else {
+            transformedLandmarks = landmarks;
+        }
+
+        let getPos;
+
+        if (imageInfo) {
+            const { offsetX, offsetY, drawWidth, drawHeight } = imageInfo;
+            getPos = (lm) => ({
+                x: offsetX + lm.x * drawWidth,
+                y: offsetY + lm.y * drawHeight,
+                depthScale: 1
+            });
+        } else {
+            const scaleFactor = useFullSize ? 0.5 : 0.6;
+            const scale = Math.min(width, height) * this.zoom * scaleFactor;
+            const centerX = width / 2;
+            const centerY = height / 2;
+            getPos = (lm) => ({
+                x: centerX + (lm.x - 0.5) * scale,
+                y: centerY + (lm.y - 0.35) * scale,
+                depthScale: lm._depthScale || 1
+            });
+        }
+
+        const joints = {
+            nose: 0, leftEyeIn: 1, leftEyeOut: 2,
+            rightEyeIn: 3, rightEyeOut: 4,
+            leftShoulder: 5, leftElbow: 6, leftWrist: 7,
+            rightShoulder: 8, rightElbow: 9, rightWrist: 10,
+            leftHip: 11, leftKnee: 12, leftAnkle: 13,
+            rightHip: 14, rightKnee: 15, rightAnkle: 16,
+            neck: 17, pelvis: 18
+        };
+
+        // OpenPose 配色 - 头部紫粉，脖子/脊柱红，手臂橙→黄→绿，腿部青→蓝→紫
+        const stickmanColors = [
+            'rgb(255, 0, 255)',   // 0: 鼻子 - 粉紫
+            'rgb(255, 0, 170)',   // 1: 左眼内 - 深粉
+            'rgb(255, 0, 170)',   // 2: 左眼外 - 深粉
+            'rgb(255, 0, 170)',   // 3: 右眼内 - 深粉
+            'rgb(255, 0, 170)',   // 4: 右眼外 - 深粉
+            'rgb(255, 170, 0)',   // 5: 左肩 - 橙
+            'rgb(255, 255, 0)',   // 6: 左肘 - 黄
+            'rgb(170, 255, 0)',   // 7: 左手腕 - 浅绿
+            'rgb(255, 170, 0)',   // 8: 右肩 - 橙
+            'rgb(255, 255, 0)',   // 9: 右肘 - 黄
+            'rgb(170, 255, 0)',   // 10: 右手腕 - 浅绿
+            'rgb(0, 255, 255)',   // 11: 左髋 - 青
+            'rgb(0, 170, 255)',   // 12: 左膝 - 浅蓝
+            'rgb(0, 85, 255)',    // 13: 左脚踝 - 蓝
+            'rgb(0, 255, 255)',   // 14: 右髋 - 青
+            'rgb(0, 170, 255)',   // 15: 右膝 - 浅蓝
+            'rgb(0, 85, 255)',    // 16: 右脚踝 - 蓝
+            'rgb(255, 0, 0)',     // 17: 脖子 - 红
+            'rgb(255, 85, 0)'     // 18: 骨盆 - 橙红
+        ];
+
+        // OpenPose 连接方式 - V形头部
+        const connections = [
+            // 脸部：左眼内-左眼外，右眼内-右眼外
+            [stickmanColors[1], joints.leftEyeIn, joints.leftEyeOut],
+            [stickmanColors[3], joints.rightEyeIn, joints.rightEyeOut],
+            // 脸部：只有左眼内和右眼内连鼻子
+            [stickmanColors[0], joints.leftEyeIn, joints.nose],
+            [stickmanColors[0], joints.rightEyeIn, joints.nose],
+            // 鼻子-脖子
+            [stickmanColors[17], joints.nose, joints.neck],
+            // 脖子-左右肩
+            [stickmanColors[5], joints.neck, joints.leftShoulder],
+            [stickmanColors[8], joints.neck, joints.rightShoulder],
+            // 左臂：肩-肘-腕
+            [stickmanColors[6], joints.leftShoulder, joints.leftElbow],
+            [stickmanColors[7], joints.leftElbow, joints.leftWrist],
+            // 右臂：肩-肘-腕
+            [stickmanColors[9], joints.rightShoulder, joints.rightElbow],
+            [stickmanColors[10], joints.rightElbow, joints.rightWrist],
+            // 脖子-骨盆（脊柱）
+            [stickmanColors[17], joints.neck, joints.pelvis],
+            // 骨盆-左右髋
+            [stickmanColors[11], joints.pelvis, joints.leftHip],
+            [stickmanColors[14], joints.pelvis, joints.rightHip],
+            // 左腿：髋-膝-踝
+            [stickmanColors[12], joints.leftHip, joints.leftKnee],
+            [stickmanColors[13], joints.leftKnee, joints.leftAnkle],
+            // 右腿：髋-膝-踝
+            [stickmanColors[15], joints.rightHip, joints.rightKnee],
+            [stickmanColors[16], joints.rightKnee, joints.rightAnkle]
+        ];
+
+        // 绘制连线（OpenPose 标准风格：更粗的线条）
+        for (const [color, a, b] of connections) {
+            const p1 = transformedLandmarks[a];
+            const p2 = transformedLandmarks[b];
+            if (p1 && p2) {
+                const pos1 = getPos(p1);
+                const pos2 = getPos(p2);
+                const avgDepth = (pos1.depthScale + pos2.depthScale) / 2;
+                ctx.strokeStyle = color;
+                ctx.lineWidth = Math.max(6, this.lineThickness * 1.5 * avgDepth);
+                ctx.lineCap = 'round';
+                ctx.beginPath();
+                ctx.moveTo(pos1.x, pos1.y);
+                ctx.lineTo(pos2.x, pos2.y);
+                ctx.stroke();
+            }
+        }
+
+        // 绘制关节点（OpenPose 标准风格：更大的圆点）
+        for (let i = 0; i < transformedLandmarks.length; i++) {
+            const lm = transformedLandmarks[i];
+            if (!lm) continue;
+
+            const pos = getPos(lm);
+            const isSelected = interactive && this.selectedPoint === i;
+
+            // OpenPose 标准风格：更大的圆点
+            const baseRadius = Math.max(8, this.lineThickness * 1.2 * pos.depthScale);
+            const radius = isSelected ? baseRadius + 5 : baseRadius;
+
+            ctx.beginPath();
+            ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+            ctx.fillStyle = isSelected ? '#ffd700' : stickmanColors[i];
+            ctx.fill();
+
+            // 选中时加高亮边框
+            if (isSelected) {
+                ctx.strokeStyle = '#ffaa00';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+            }
+        }
+    }
+
+    drawPreviewSkeleton(ctx, landmarks, width, height, isExport = false) {
+        // 对于预览和导出，强制剔除 3D 深度缩放，使用纯平面的点和线
+        let transformedLandmarks = landmarks;
+        // 【核心修复】：无论是否导出，只要滑动了旋转滑块，就一定要计算并应用 3D 透视！
+        const use3D = (this.rotationX !== 0 || this.rotationY !== 0 || this.rotationZ !== 0);
+
+        if (use3D && landmarks) {
+            transformedLandmarks = landmarks.map((lm, index) => {
+                const t = this.getTransformedPos(lm, index);
+                return { ...lm, x: t.x, y: t.y, _depthScale: t.depthScale };
+            });
+        }
+
+        let getPos;
+
+        if (isExport || use3D) {
+            // 导出或 3D 旋转时：坐标已归一化到 [0, 1]，直接乘以宽高
+            getPos = (lm) => ({
+                x: lm.x * width,
+                y: lm.y * height
+            });
+        } else if (this.lastImageInfo && this.uploadedImage && !use3D) {
+            // UI 预览状态下且有原图，映射到预览框居中
+            // 【防御性】只有同时存在 lastImageInfo 和 uploadedImage 时才使用此路径
+            const { offsetX, offsetY, drawWidth, drawHeight } = this.lastImageInfo;
+
+            let minX = Infinity, maxX = -Infinity;
+            let minY = Infinity, maxY = -Infinity;
+            for (const lm of transformedLandmarks) {
+                if (lm) {
+                    const px = offsetX + lm.x * drawWidth;
+                    const py = offsetY + lm.y * drawHeight;
+                    minX = Math.min(minX, px);
+                    maxX = Math.max(maxX, px);
+                    minY = Math.min(minY, py);
+                    maxY = Math.max(maxY, py);
+                }
+            }
+
+            const boneWidth = maxX - minX;
+            const boneHeight = maxY - minY;
+            const boneCenterX = (minX + maxX) / 2;
+            const boneCenterY = (minY + maxY) / 2;
+
+            const previewScale = Math.min(width / (boneWidth * 1.4), height / (boneHeight * 1.4));
+            const previewCenterX = width / 2;
+            const previewCenterY = height / 2;
+
+            getPos = (lm) => {
+                const originalX = offsetX + lm.x * drawWidth;
+                const originalY = offsetY + lm.y * drawHeight;
+                return {
+                    x: previewCenterX + (originalX - boneCenterX) * previewScale,
+                    y: previewCenterY + (originalY - boneCenterY) * previewScale
+                };
+            };
+        } else {
+            // UI 预览状态下，没有原图或状态不匹配时使用通用路径
+            const scale = Math.min(width, height) * 0.6;
+            const centerX = width / 2;
+            const centerY = height / 2;
+            getPos = (lm) => ({
+                x: centerX + (lm.x - 0.5) * scale,
+                y: centerY + (lm.y - 0.35) * scale
+            });
+        }
+
+        const joints = {
+            nose: 0, leftEyeIn: 1, leftEyeOut: 2,
+            rightEyeIn: 3, rightEyeOut: 4,
+            leftShoulder: 5, leftElbow: 6, leftWrist: 7,
+            rightShoulder: 8, rightElbow: 9, rightWrist: 10,
+            leftHip: 11, leftKnee: 12, leftAnkle: 13,
+            rightHip: 14, rightKnee: 15, rightAnkle: 16,
+            neck: 17, pelvis: 18
+        };
+
+        // OpenPose 配色 - 与主画布一致
+        const stickmanColors = [
+            'rgb(255, 0, 255)',   // 0: 鼻子 - 粉紫
+            'rgb(255, 0, 170)',   // 1: 左眼内 - 深粉
+            'rgb(255, 0, 170)',   // 2: 左眼外 - 深粉
+            'rgb(255, 0, 170)',   // 3: 右眼内 - 深粉
+            'rgb(255, 0, 170)',   // 4: 右眼外 - 深粉
+            'rgb(255, 170, 0)',   // 5: 左肩 - 橙
+            'rgb(255, 255, 0)',   // 6: 左肘 - 黄
+            'rgb(170, 255, 0)',   // 7: 左手腕 - 浅绿
+            'rgb(255, 170, 0)',   // 8: 右肩 - 橙
+            'rgb(255, 255, 0)',   // 9: 右肘 - 黄
+            'rgb(170, 255, 0)',   // 10: 右手腕 - 浅绿
+            'rgb(0, 255, 255)',   // 11: 左髋 - 青
+            'rgb(0, 170, 255)',   // 12: 左膝 - 浅蓝
+            'rgb(0, 85, 255)',    // 13: 左脚踝 - 蓝
+            'rgb(0, 255, 255)',   // 14: 右髋 - 青
+            'rgb(0, 170, 255)',   // 15: 右膝 - 浅蓝
+            'rgb(0, 85, 255)',    // 16: 右脚踝 - 蓝
+            'rgb(255, 0, 0)',     // 17: 脖子 - 红
+            'rgb(255, 85, 0)'     // 18: 骨盆 - 橙红
+        ];
+
+        // OpenPose 连接方式 - V形头部，与主画布一致
+        const connections = [
+            // 脸部：左眼内-左眼外，右眼内-右眼外
+            [stickmanColors[1], joints.leftEyeIn, joints.leftEyeOut],
+            [stickmanColors[3], joints.rightEyeIn, joints.rightEyeOut],
+            // 脸部：只有左眼内和右眼内连鼻子
+            [stickmanColors[0], joints.leftEyeIn, joints.nose],
+            [stickmanColors[0], joints.rightEyeIn, joints.nose],
+            // 鼻子-脖子
+            [stickmanColors[17], joints.nose, joints.neck],
+            // 脖子-左右肩
+            [stickmanColors[5], joints.neck, joints.leftShoulder],
+            [stickmanColors[8], joints.neck, joints.rightShoulder],
+            // 左臂：肩-肘-腕
+            [stickmanColors[6], joints.leftShoulder, joints.leftElbow],
+            [stickmanColors[7], joints.leftElbow, joints.leftWrist],
+            // 右臂：肩-肘-腕
+            [stickmanColors[9], joints.rightShoulder, joints.rightElbow],
+            [stickmanColors[10], joints.rightElbow, joints.rightWrist],
+            // 脖子-骨盆（脊柱）
+            [stickmanColors[17], joints.neck, joints.pelvis],
+            // 骨盆-左右髋
+            [stickmanColors[11], joints.pelvis, joints.leftHip],
+            [stickmanColors[14], joints.pelvis, joints.rightHip],
+            // 左腿：髋-膝-踝
+            [stickmanColors[12], joints.leftHip, joints.leftKnee],
+            [stickmanColors[13], joints.leftKnee, joints.leftAnkle],
+            // 右腿：髋-膝-踝
+            [stickmanColors[15], joints.rightHip, joints.rightKnee],
+            [stickmanColors[16], joints.rightKnee, joints.rightAnkle]
+        ];
+
+        // OpenPose 标准风格：更粗的线条和更大的关节点
+        const baseThickness = isExport ? Math.max(5, width * 0.01) : Math.max(5, this.lineThickness * 0.8);
+        const basePointRadius = isExport ? Math.max(6, width * 0.008) : Math.max(6, this.lineThickness * 0.6);
+
+        // 绘制连接线（火柴人风格）
+        for (const [color, a, b] of connections) {
+            const p1 = transformedLandmarks[a];
+            const p2 = transformedLandmarks[b];
+            if (p1 && p2) {
+                const pos1 = getPos(p1);
+                const pos2 = getPos(p2);
+                ctx.strokeStyle = color;
+                ctx.lineWidth = baseThickness;
+                ctx.lineCap = 'round';
+                ctx.beginPath();
+                ctx.moveTo(pos1.x, pos1.y);
+                ctx.lineTo(pos2.x, pos2.y);
+                ctx.stroke();
+            }
+        }
+
+        // 绘制关节节点（火柴人风格：小圆点）
+        for (let i = 0; i < transformedLandmarks.length; i++) {
+            const lm = transformedLandmarks[i];
+            if (!lm) continue;
+
+            const pos = getPos(lm);
+            const color = stickmanColors[i] || '#ffffff';
+
+            ctx.beginPath();
+            ctx.arc(pos.x, pos.y, basePointRadius, 0, Math.PI * 2);
+            ctx.fillStyle = color;
+            ctx.fill();
+        }
+    }
+
+    // 1. 计算并记录当前姿势的初始四肢长度
+    calculateBoneLengths() {
+        if (!this.currentPoseData) return;
+
+        // 两点之间距离公式
+        const dist = (p1, p2) => Math.hypot(p1.x - p2.x, p1.y - p2.y);
+        const p = this.currentPoseData;
+
+        // OpenPose 20点索引: 5=左肩,6=左肘,7=左手腕; 8=右肩,9=右肘,10=右手腕;
+        //                   11=左髋,12=左膝,13=左脚踝; 14=右髋,15=右膝,16=右脚踝; 17=脖子,18=骨盆
+        this.boneLengths = {
+            leftUpperArm: dist(p[5], p[6]),    // 左大臂 (左肩->左肘)
+            leftLowerArm: dist(p[6], p[7]),    // 左小臂 (左肘->左手腕)
+            rightUpperArm: dist(p[8], p[9]),   // 右大臂 (右肩->右肘)
+            rightLowerArm: dist(p[9], p[10]),   // 右小臂 (右肘->右手腕)
+            leftUpperLeg: dist(p[11], p[12]),   // 左大腿 (左髋->左膝)
+            leftLowerLeg: dist(p[12], p[13]),  // 左小腿 (左膝->左脚踝)
+            rightUpperLeg: dist(p[14], p[15]), // 右大腿 (右髋->右膝)
+            rightLowerLeg: dist(p[15], p[16])  // 右小腿 (右膝->右脚踝)
+        };
+    }
+
+    // 2. 轻量级 FABRIK 逆向运动学求解器
+    solveIK(index, targetX, targetY) {
+        const p = this.currentPoseData;
+        const dist = (p1, p2) => Math.hypot(p1.x - p2.x, p1.y - p2.y);
+        const bl = this.boneLengths;
+
+        // 如果还没有记录长度，直接赋值并返回
+        if (!bl) {
+            p[index].x = targetX;
+            p[index].y = targetY;
+            return;
+        }
+
+        // 内部辅助函数：解算两个骨架的联动 (比如 肩 -> 肘 -> 腕)
+        const solve2Bone = (rootIdx, midIdx, endIdx, len1, len2, tx, ty) => {
+            const root = p[rootIdx];
+            let end = { x: tx, y: ty };
+            const maxLen = len1 + len2;
+            let dRootEnd = Math.max(0.0001, dist(root, end));
+
+            // 限制 1：最大伸展距离限制（防拉长）
+            if (dRootEnd > maxLen) {
+                end.x = root.x + (end.x - root.x) * (maxLen / dRootEnd);
+                end.y = root.y + (end.y - root.y) * (maxLen / dRootEnd);
+            }
+
+            // 前向传递 (把末端拉到鼠标位置，推算关节)
+            let dEndMid = Math.max(0.0001, dist(end, p[midIdx]));
+            let newMidX = end.x + (p[midIdx].x - end.x) * (len2 / dEndMid);
+            let newMidY = end.y + (p[midIdx].y - end.y) * (len2 / dEndMid);
+
+            // 反向传递 (把根部固定死，推算正确的关节位置)
+            let dRootMid = Math.max(0.0001, dist(root, {x: newMidX, y: newMidY}));
+            p[midIdx].x = root.x + (newMidX - root.x) * (len1 / dRootMid);
+            p[midIdx].y = root.y + (newMidY - root.y) * (len1 / dRootMid);
+
+            // 最终定位末端 (手腕/脚踝)
+            let dMidEnd = Math.max(0.0001, dist(p[midIdx], end));
+            p[endIdx].x = p[midIdx].x + (end.x - p[midIdx].x) * (len2 / dMidEnd);
+            p[endIdx].y = p[midIdx].y + (end.y - p[midIdx].y) * (len2 / dMidEnd);
+        };
+
+        // 内部辅助函数：解算单个骨架 (比如只拖拽手肘时)
+        const solve1Bone = (rootIdx, endIdx, len, tx, ty) => {
+            const root = p[rootIdx];
+            const d = Math.max(0.0001, dist(root, {x: tx, y: ty}));
+            p[endIdx].x = root.x + (tx - root.x) * (len / d);
+            p[endIdx].y = root.y + (ty - root.y) * (len / d);
+        };
+
+        // 根据你鼠标拖拽的是哪个点，调用对应的联动逻辑 (OpenPose 20点索引)
+        if (index === 7) { solve2Bone(5, 6, 7, bl.leftUpperArm, bl.leftLowerArm, targetX, targetY); }       // 左手腕
+        else if (index === 6) { solve1Bone(5, 6, bl.leftUpperArm, targetX, targetY); solve1Bone(6, 7, bl.leftLowerArm, p[7].x, p[7].y); } // 左肘
+        else if (index === 10) { solve2Bone(8, 9, 10, bl.rightUpperArm, bl.rightLowerArm, targetX, targetY); }      // 右手腕
+        else if (index === 9) { solve1Bone(8, 9, bl.rightUpperArm, targetX, targetY); solve1Bone(9, 10, bl.rightLowerArm, p[10].x, p[10].y); } // 右肘
+        else if (index === 13) { solve2Bone(11, 12, 13, bl.leftUpperLeg, bl.leftLowerLeg, targetX, targetY); }   // 左脚踝
+        else if (index === 12) { solve1Bone(11, 12, bl.leftUpperLeg, targetX, targetY); solve1Bone(12, 13, bl.leftLowerLeg, p[13].x, p[13].y); } // 左膝
+        else if (index === 16) { solve2Bone(14, 15, 16, bl.rightUpperLeg, bl.rightLowerLeg, targetX, targetY); } // 右脚踝
+        else if (index === 15) { solve1Bone(14, 15, bl.rightUpperLeg, targetX, targetY); solve1Bone(15, 16, bl.rightLowerLeg, p[16].x, p[16].y); } // 右膝
+        else {
+            // 如果拖拽的是脸部、脖子、肩膀、骨盆等躯干节点，直接移动，并重新计算保存全身比例
+            p[index].x = targetX;
+            p[index].y = targetY;
+            this.calculateBoneLengths();
+        }
+    }
+
+    resetPose() {
+        if (this.originalPoseData) {
+            this.currentPoseData = this.originalPoseData.map(p => ({ ...p }));
+
+            // 重置姿势后也要锁定长度
+            this.calculateBoneLengths();
+
+            this.render();
+        }
+    }
+
+    resetRotation() {
+        this.rotationX = 0;
+        this.rotationY = 0;
+        this.rotationZ = 0;
+        this.updateSliders();
+        this.updateCubeRotation();
+        this.render();
+    }
+
+    setPresetView(view) {
+        const views = {
+            front: { x: 0, y: 0, z: 0 },
+            left: { x: 0, y: -90 * Math.PI / 180, z: 0 },
+            right: { x: 0, y: 90 * Math.PI / 180, z: 0 },
+            back: { x: 0, y: 180 * Math.PI / 180, z: 0 },
+            top: { x: -90 * Math.PI / 180, y: 0, z: 0 }
+        };
+
+        const v = views[view];
+        if (v) {
+            this.rotationX = v.x;
+            this.rotationY = v.y;
+            this.rotationZ = v.z;
+            this.updateSliders();
+            this.updateCubeRotation();
+            this.render();
+        }
+    }
+
+    exportImage() {
+        const tempCanvas = document.createElement('canvas');
+
+        // 1. 确定导出画幅
+        if (this.uploadedImage) {
+            // 如果有原图，严格保持原图分辨率，确保导入 AI 后 1:1 对齐
+            tempCanvas.width = this.uploadedImage.width;
+            tempCanvas.height = this.uploadedImage.height;
+        } else {
+            // 如果没有原图，使用默认竖屏比例 3:4
+            tempCanvas.width = 768;
+            tempCanvas.height = 1024;
+        }
+
+        const tempCtx = tempCanvas.getContext('2d');
+
+        // 填充纯黑背景 (ControlNet 必须)
+        tempCtx.fillStyle = '#000000';
+        tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+
+        // 2. 绘制骨骼 (传入 isExport=true 标志)
+        if (this.currentPoseData) {
+            this.drawPreviewSkeleton(tempCtx, this.currentPoseData, tempCanvas.width, tempCanvas.height, true);
+        }
+
+        const link = document.createElement('a');
+        link.download = 'anypose_controlnet.png';
+        link.href = tempCanvas.toDataURL('image/png');
+        link.click();
+    }
+
+    // =======================================
+    // AI生成相关功能
+    // =======================================
+
+    handleAIGenerate() {
+        // 检查是否正在生成中
+        if (this.isGenerating) {
+            this.showError('正在生成中，请稍候...');
+            return;
+        }
+
+        // 检查必要条件
+        if (!this.currentPoseData) {
+            this.showError('请先加载或创建骨骼姿势');
+            return;
+        }
+
+        // 显示提示词输入区域
+        const resultContainer = document.getElementById('generationResult');
+        const statusEl = document.getElementById('generationStatus');
+
+        if (resultContainer) {
+            resultContainer.style.display = 'block';
+        }
+
+        if (statusEl) {
+            statusEl.style.display = 'none';
+        }
+
+        // 聚焦到提示词输入框
+        const promptInput = document.getElementById('promptInput');
+        if (promptInput) {
+            promptInput.focus();
+        }
+
+        // 显示简单的确认对话框让用户输入提示词
+        this.showPromptDialog();
+    }
+
+    showPromptDialog() {
+        // 创建一个确认按钮来开始生成
+        const existingConfirmBtn = document.getElementById('confirmPromptBtn');
+        if (!existingConfirmBtn) {
+            const confirmBtn = document.createElement('button');
+            confirmBtn.id = 'confirmPromptBtn';
+            confirmBtn.textContent = '开始生成';
+            confirmBtn.className = 'ai-generate-btn';
+            confirmBtn.style.marginTop = '10px';
+            confirmBtn.onclick = () => this.confirmPromptAndGenerate();
+
+            const resultContainer = document.getElementById('generationResult');
+            if (resultContainer) {
+                resultContainer.appendChild(confirmBtn);
+            }
+        }
+    }
+
+    confirmPromptAndGenerate() {
+        const promptInput = document.getElementById('promptInput');
+        const prompt = promptInput ? promptInput.value.trim() : '';
+
+        if (!prompt) {
+            this.showError('请输入生成提示词');
+            return;
+        }
+
+        if (prompt.length > MAX_PROMPT_LENGTH) {
+            this.showError(`提示词过长，请控制在${MAX_PROMPT_LENGTH}字符以内`);
+            return;
+        }
+
+        // 移除确认按钮
+        const confirmBtn = document.getElementById('confirmPromptBtn');
+        if (confirmBtn) {
+            confirmBtn.remove();
+        }
+
+        this.startAIGeneration(prompt);
+    }
+
+    startAIGeneration(prompt) {
+        // 准备图像数据
+        this.showLoadingState(true);
+
+        try {
+            const { originalImage, skeletonImage } = this.prepareImagesForAI();
+            this.callAIGenerationAPI(originalImage, skeletonImage, prompt);
+        } catch (error) {
+            console.error('AI生成准备失败:', error);
+            this.showError('图像准备失败: ' + error.message);
+            this.showLoadingState(false);
+        }
+    }
+
+    prepareImagesForAI() {
+        // 创建骨骼图
+        const skeletonCanvas = document.createElement('canvas');
+        const skeletonCtx = skeletonCanvas.getContext('2d');
+
+        // 设置骨骼图尺寸
+        let skeletonWidth, skeletonHeight;
+        if (this.uploadedImage) {
+            skeletonWidth = this.uploadedImage.width;
+            skeletonHeight = this.uploadedImage.height;
+        } else {
+            skeletonWidth = 512;
+            skeletonHeight = 768;
+        }
+
+        skeletonCanvas.width = skeletonWidth;
+        skeletonCanvas.height = skeletonHeight;
+
+        // 填充黑色背景
+        skeletonCtx.fillStyle = '#000000';
+        skeletonCtx.fillRect(0, 0, skeletonWidth, skeletonHeight);
+
+        // 绘制骨骼
+        if (this.currentPoseData) {
+            this.drawPreviewSkeleton(skeletonCtx, this.currentPoseData, skeletonWidth, skeletonHeight, true);
+        }
+
+        // 准备原图
+        let originalImage = null;
+        if (this.uploadedImage) {
+            originalImage = this.uploadedImage;
+        }
+
+        return {
+            originalImage: originalImage,
+            skeletonImage: skeletonCanvas.toDataURL('image/png').split(',')[1]
+        };
+    }
+
+    async callAIGenerationAPI(originalImage, skeletonImage, prompt) {
+        const currentConfig = this.config[this.config.provider];
+
+        // 检查API密钥
+        if (!currentConfig.apiKey) {
+            this.showError(`请配置${this.getProviderDisplayName(this.config.provider)} API密钥`);
+            this.showLoadingState(false);
+            return;
+        }
+
+        try {
+            // 根据服务商构建不同的请求体
+            let requestBody, endpoint, headers;
+
+            if (this.config.provider === 'doubao') {
+                // 修复：只使用与测试连接相同的基本参数，移除 image 和 reference_image
+                requestBody = {
+                    model: currentConfig.model,
+                    prompt: prompt,
+                    ...DEFAULT_GENERATION_PARAMS
+                };
+
+                endpoint = currentConfig.endpoint;
+                headers = {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${currentConfig.apiKey}`
+                };
+
+                console.log('=== AI生成请求 ===');
+                console.log('Endpoint:', endpoint);
+                console.log('Model:', currentConfig.model);
+                console.log('Prompt:', prompt);
+                console.log('Request body:', JSON.stringify(requestBody, null, 2));
+
+            } else if (this.config.provider === 'openai') {
+                requestBody = {
+                    model: currentConfig.model,
+                    prompt: prompt,
+                    n: 1,
+                    size: '1024x1024'
+                };
+
+                endpoint = currentConfig.endpoint;
+                headers = {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${currentConfig.apiKey}`
+                };
+            }
+
+            // 发送API请求
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify(requestBody),
+                signal: AbortSignal.timeout(120000) // 2分钟超时
+            });
+
+            console.log('=== AI生成响应 ===');
+            console.log('Status:', response.status, response.statusText);
+
+            if (!response.ok) {
+                // 尝试读取错误响应体
+                let errorDetail = '';
+                try {
+                    const errorResult = await response.clone().json();
+                    console.log('Error response:', errorResult);
+                    errorDetail = JSON.stringify(errorResult);
+                } catch (e) {
+                    const errorText = await response.clone().text();
+                    console.log('Error response (text):', errorText);
+                    errorDetail = errorText;
+                }
+                throw new Error(`API请求失败: ${response.status} ${response.statusText} - ${errorDetail}`);
+            }
+
+            const result = await response.json();
+            console.log('Success response:', result);
+            this.handleGenerationResponse(result);
+
+        } catch (error) {
+            console.error('AI生成API调用失败:', error);
+
+            if (error.name === 'TimeoutError') {
+                this.showError('生成超时，请重试');
+            } else if (error.message.includes('401')) {
+                this.showError('API密钥无效，请检查配置');
+            } else if (error.message.includes('429')) {
+                this.showError('API调用频率超限，请稍后再试');
+            } else if (error.message.includes('404')) {
+                this.showError('API端点不存在，请检查配置');
+            } else {
+                this.showError('生成失败: ' + error.message);
+            }
+
+            this.showLoadingState(false);
+        }
+    }
+
+    async imageToBase64(image) {
+        return new Promise((resolve, reject) => {
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = image.width;
+                canvas.height = image.height;
+
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(image, 0, 0);
+
+                const dataURL = canvas.toDataURL('image/png');
+                resolve(dataURL.split(',')[1]);
+            } catch (error) {
+                reject(error);
+            }
+        });
+    }
+
+    handleGenerationResponse(response) {
+        this.showLoadingState(false);
+
+        // 解析豆包API响应
+        if (response.data && response.data.length > 0) {
+            const imageUrl = response.data[0].url;
+            this.displayGenerationResult(imageUrl);
+        } else {
+            this.showError('生成结果解析失败');
+        }
+    }
+
+    displayGenerationResult(imageUrl) {
+        const resultContainer = document.getElementById('generationResult');
+        const resultImage = document.getElementById('resultImage');
+        const downloadBtn = document.getElementById('downloadResult');
+
+        if (resultContainer && resultImage && downloadBtn) {
+            // 显示结果容器
+            resultContainer.style.display = 'block';
+
+            // 设置结果图片
+            resultImage.src = imageUrl;
+            resultImage.style.display = 'block';
+
+            // 启用下载按钮
+            downloadBtn.style.display = 'block';
+            downloadBtn.onclick = () => this.downloadImage(imageUrl, 'ai_generated.png');
+
+            // 保存生成结果
+            this.lastGenerationResult = imageUrl;
+
+            console.log('AI生成成功，结果已显示');
+        }
+    }
+
+    downloadImage(url, filename) {
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        link.target = '_blank';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
+
+    showLoadingState(show) {
+        const statusEl = document.getElementById('generationStatus');
+        const generateBtn = document.getElementById('aiGenerateBtn');
+
+        if (statusEl && generateBtn) {
+            if (show) {
+                statusEl.style.display = 'flex';
+                generateBtn.disabled = true;
+                generateBtn.style.opacity = '0.6';
+                generateBtn.style.cursor = 'not-allowed';
+                this.isGenerating = true;
+            } else {
+                statusEl.style.display = 'none';
+                generateBtn.disabled = false;
+                generateBtn.style.opacity = '1';
+                generateBtn.style.cursor = 'pointer';
+                this.isGenerating = false;
+            }
+        }
+    }
+
+    showError(message) {
+        // 简单的错误提示，可以后续优化为更美观的提示框
+        alert('AI生成错误: ' + message);
+        console.error('AI生成错误:', message);
+    }
+
+    // =======================================
+    // API设置相关功能
+    // =======================================
+
+    showApiSettings() {
+        const modal = document.getElementById('apiSettingsModal');
+        const apiKeyInput = document.getElementById('apiKeyInput');
+        const providerSelect = document.getElementById('providerSelect');
+
+        if (modal && apiKeyInput) {
+            // 加载当前配置（会话级）
+            const currentConfig = this.config[this.config.provider];
+            apiKeyInput.value = currentConfig.apiKey;
+
+            if (providerSelect) {
+                providerSelect.value = this.config.provider;
+            }
+
+            // 显示模态框
+            modal.style.display = 'flex';
+            apiKeyInput.focus();
+        }
+    }
+
+    hideApiSettings() {
+        const modal = document.getElementById('apiSettingsModal');
+        if (modal) {
+            modal.style.display = 'none';
+        }
+    }
+
+    saveApiKey() {
+        const apiKeyInput = document.getElementById('apiKeyInput');
+        const providerSelect = document.getElementById('providerSelect');
+        const endpointInput = document.getElementById('endpointInput');
+        const modelInput = document.getElementById('modelInput');
+
+        if (apiKeyInput && providerSelect) {
+            const apiKey = apiKeyInput.value.trim();
+            const provider = providerSelect.value;
+            const endpoint = endpointInput ? endpointInput.value.trim() : '';
+            const model = modelInput ? modelInput.value.trim() : '';
+
+            if (apiKey) {
+                // 保存到会话级配置（不持久化）
+                this.config[provider].apiKey = apiKey;
+                this.config[provider].endpoint = endpoint || this.config[provider].endpoint;
+                this.config[provider].model = model || this.config[provider].model;
+                this.config.provider = provider;
+
+                // 更新当前使用的API密钥
+                this.updateCurrentApiKey();
+
+                // 更新UI显示
+                this.updateConfigUI();
+
+                // 隐藏模态框
+                this.hideApiSettings();
+
+                // 显示成功提示
+                this.showSuccess(`${provider} API配置已保存（会话级）`);
+            } else {
+                this.showError('请输入有效的API密钥');
+            }
+        }
+    }
+
+    updateCurrentApiKey() {
+        // 更新当前使用的API密钥
+        this.apiKey = this.config[this.config.provider].apiKey;
+    }
+
+    testApiConnection() {
+        const provider = this.config.provider;
+        const config = this.config[provider];
+
+        if (!config.apiKey) {
+            this.showError('请先配置API密钥');
+            return;
+        }
+
+        // 显示测试状态
+        this.showLoadingState(true);
+
+        // 根据不同服务商构建测试请求
+        let testRequest;
+
+        if (provider === 'doubao') {
+            testRequest = {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${config.apiKey}`
+                },
+                body: JSON.stringify({
+                    model: config.model,
+                    prompt: 'a simple test image',
+                    ...DEFAULT_GENERATION_PARAMS
+                })
+            };
+        } else if (provider === 'openai') {
+            testRequest = {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${config.apiKey}`
+                },
+                body: JSON.stringify({
+                    model: config.model,
+                    prompt: 'a simple test image',
+                    n: 1,
+                    size: '256x256'
+                })
+            };
+        } else if (provider === 'stability') {
+            testRequest = {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${config.apiKey}`
+                },
+                body: JSON.stringify({
+                    text_prompts: [{ text: 'a simple test image' }],
+                    width: 512,
+                    height: 512
+                })
+            };
+        }
+
+        fetch(config.endpoint, testRequest)
+            .then(response => {
+                this.showLoadingState(false);
+                if (response.ok) {
+                    this.showSuccess('API连接测试成功');
+                } else {
+                    this.showError(`API连接失败: ${response.status}`);
+                }
+            })
+            .catch(error => {
+                this.showLoadingState(false);
+                this.showError('API连接测试失败: ' + error.message);
+            });
+    }
+
+    showSuccess(message) {
+        // 简单的成功提示
+        alert('成功: ' + message);
+        console.log('操作成功:', message);
+    }
+
+    // =======================================
+    // 配置中心相关功能
+    // =======================================
+
+    switchProvider(provider) {
+        this.config.provider = provider;
+        this.updateCurrentApiKey();
+        this.updateConfigUI();
+    }
+
+    updateConfig(key, value) {
+        const currentConfig = this.config[this.config.provider];
+        if (key === 'endpoint') {
+            currentConfig.endpoint = value;
+        } else if (key === 'model') {
+            currentConfig.model = value;
+        }
+    }
+
+    updateConfigUI() {
+        const currentConfig = this.config[this.config.provider];
+        const providerSelect = document.getElementById('providerSelect');
+        const apiKeyInput = document.getElementById('apiKeyInput');
+        const endpointInput = document.getElementById('endpointInput');
+        const modelInput = document.getElementById('modelInput');
+        const currentProviderSpan = document.getElementById('currentProvider');
+        const currentModelSpan = document.getElementById('currentModel');
+        const configStatusSpan = document.getElementById('configStatus');
+
+        if (providerSelect) providerSelect.value = this.config.provider;
+        if (apiKeyInput) apiKeyInput.value = currentConfig.apiKey;
+        if (endpointInput) endpointInput.value = currentConfig.endpoint;
+        if (modelInput) modelInput.value = currentConfig.model;
+        if (currentProviderSpan) currentProviderSpan.textContent = this.getProviderDisplayName(this.config.provider);
+        if (currentModelSpan) currentModelSpan.textContent = currentConfig.model;
+
+        // 更新配置状态
+        if (configStatusSpan) {
+            if (currentConfig.apiKey) {
+                configStatusSpan.textContent = '已配置';
+                configStatusSpan.className = 'status-indicator configured';
+            } else {
+                configStatusSpan.textContent = '未配置';
+                configStatusSpan.className = 'status-indicator';
+            }
+        }
+    }
+
+    getProviderDisplayName(provider) {
+        const names = {
+            'doubao': '豆包AI',
+            'openai': 'OpenAI',
+            'stability': 'Stability AI'
+        };
+        return names[provider] || provider;
+    }
+
+    // 初始化配置UI
+    initConfigUI() {
+        this.updateConfigUI();
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    try {
+        new AnyPoseApp();
+        console.log('AnyPose: 初始化成功');
+    } catch (error) {
+        console.error('AnyPose: 初始化失败:', error);
+    }
+});

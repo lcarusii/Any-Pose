@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m http.server 8080)",
+      "Bash(pkill -f \"python -m http.server\")",
+      "Bash(curl -s http://localhost:8080)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\ling.chen\\.claude\\plans"
+    ]
+  }
+}
