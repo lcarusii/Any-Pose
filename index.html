@@ -129,13 +129,13 @@
                 <!-- 提示词和控制区域 -->
                 <div class="prompt-section">
                     <label class="setting-label">生成提示词</label>
-                    <textarea id="promptInput" class="prompt-input" placeholder="严格参考图一的动作姿势，将图二人物的动作替换为图一的姿势，注意手部和腿部的位置，保持图二人物的面部特征、发型、体型、服装完全一致，保持原图的艺术风格、画风、绘画风格完全一致，不要改变画风，不要变成 3D、写实、骷髅或其他风格，全身照，8k分辨率，超高细节，专业质感" rows="4"></textarea>
+                    <textarea id="promptInput" class="prompt-input" placeholder="严格参考图一的动作姿势，将图二人物的动作替换为图一的姿势，注意手部和腿部的位置，严格在图二的原有人物的手部和腿部上进行修改，不要增添部位，保持图二人物的面部特征、发型、体型、服装完全一致，保持原图的艺术风格、画风、绘画风格完全一致，严禁改变画风，不要变成 3D、写实、骷髅或其他风格，严禁保留动作姿势的线条颜色，全身照，8k分辨率，超高细节，专业质感" rows="4"></textarea>
                 </div>
                 <!-- 提示词模板 -->
                 <div class="prompt-templates">
                     <span class="setting-label">快速模板</span>
                     <div class="template-buttons">
-                        <button class="template-btn" data-prompt="严格参考图一的动作姿势，将图二人物的动作替换为图一的姿势，注意手部和腿部的位置，保持图二人物的面部特征、发型、体型、服装完全一致，保持原图的艺术风格、画风、绘画风格完全一致，不要改变画风，不要变成 3D、写实、骷髅或其他风格，全身照，8k分辨率，超高细节，专业质感">姿态迁移</button>
+                        <button class="template-btn" data-prompt="严格参考图一的动作姿势，将图二人物的动作替换为图一的姿势，注意手部和腿部的位置，严格在图二的原有人物的手部和腿部上进行修改，不要增添部位，保持图二人物的面部特征、发型、体型、服装完全一致，保持原图的艺术风格、画风、绘画风格完全一致，严禁改变画风，不要变成 3D、写实、骷髅或其他风格，严禁保留动作姿势的线条颜色，全身照，8k分辨率，超高细节，专业质感">姿态迁移</button>
                         <button class="template-btn" data-prompt="参考图一的姿势，将图二人物的动作替换为图一的姿势，注意手部和腿部位置，保持图二人物的面部五官、发型、体型、服装完全一致，保持原图的艺术风格、画风、绘画风格完全一致，不要改变画风，不要变成 3D、写实、骷髅或其他风格，自然光线，高清细节，高画质">保持外貌</button>
                         <button class="template-btn" data-prompt="严格参考图一的姿势，将图二人物的动作替换为图一的姿势，注意手部和腿部位置，图二是同一个角色，保持特征完全一致，保持原图的艺术风格、画风、绘画风格完全一致，不要改变画风，不要变成 3D、写实、骷髅或其他风格，新的姿势，自然场景，全身照，高质量，高画质">同一人新姿势</button>
                     </div>
@@ -217,6 +217,7 @@
                     <label for="providerSelect">AI服务商:</label>
                     <select id="providerSelect" class="provider-select">
                         <option value="doubao">豆包AI</option>
+                        <option value="qwen">千问AI</option>
                         <option value="openai">OpenAI</option>
                         <option value="stability">Stability AI</option>
                     </select>
@@ -238,6 +239,7 @@
                     <select id="modelInput" class="provider-select">
                         <option value="doubao-seedream-5-0-260128">doubao-seedream-5-0-260128</option>
                         <option value="doubao-seedream-4-5-251128">doubao-seedream-4-5-251128</option>
+                        <option value="qwen-image-2.0">qwen-image-2.0</option>
                     </select>
                 </div>
 

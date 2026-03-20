@@ -47,6 +47,11 @@ class AnyPoseApp {
                 endpoint: 'https://ark.cn-beijing.volces.com/api/v3/images/generations',
                 model: 'doubao-seedream-5-0-260128'
             },
+            qwen: {
+                apiKey: '',
+                endpoint: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
+                model: 'qwen-image-2.0-pro'
+            },
             openai: {
                 apiKey: '',
                 endpoint: 'https://api.openai.com/v1/images/generations',
@@ -1516,6 +1521,74 @@ class AnyPoseApp {
                     image: requestBody.image ? requestBody.image.map(() => '[IMAGE_DATA]') : []
                 }, null, 2));
 
+            } else if (this.config.provider === 'qwen') {
+                // 千问AI请求 - 多模态生成格式
+                // 千问 API 文档: https://help.aliyun.com/zh/dashscope/developer-reference/
+                const content = [];
+
+                // 先添加骨骼图（作为姿势参考 - 图一）
+                if (skeletonImage) {
+                    content.push({
+                        image: 'data:image/png;base64,' + skeletonImage
+                    });
+                }
+
+                // 再添加原图（如果有，作为人物参考 - 图二）
+                if (originalImageBase64) {
+                    content.push({
+                        image: 'data:image/png;base64,' + originalImageBase64
+                    });
+                }
+
+                // 直接使用用户输入的提示词
+                content.push({
+                    text: prompt
+                });
+
+                // 千问的多模态请求格式
+                requestBody = {
+                    model: currentConfig.model,
+                    input: {
+                        messages: [
+                            {
+                                role: 'user',
+                                content: content
+                            }
+                        ]
+                    },
+                    parameters: {
+                        n: 1,
+                        negative_prompt: '',
+                        prompt_extend: true,
+                        watermark: false,
+                        size: '2048*2048'
+                    }
+                };
+
+                endpoint = currentConfig.endpoint;
+                headers = {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${currentConfig.apiKey}`
+                };
+
+                console.log('=== AI生成请求 (千问AI) ===');
+                console.log('Provider: 千问AI');
+                console.log('Endpoint:', endpoint);
+                console.log('Model:', currentConfig.model);
+                console.log('Text Prompt:', prompt);
+                console.log('Has original image:', !!originalImageBase64);
+                console.log('Has skeleton image:', !!skeletonImage);
+                console.log('Content items:', content.length);
+                console.log('Request body:', JSON.stringify({
+                    ...requestBody,
+                    input: {
+                        messages: requestBody.input.messages.map(msg => ({
+                            ...msg,
+                            content: msg.content.map(c => c.image ? '[IMAGE_DATA]' : c)
+                        }))
+                    }
+                }, null, 2));
+
             } else if (this.config.provider === 'openai') {
                 // OpenAI DALL-E请求
                 requestBody = {
@@ -1564,6 +1637,21 @@ class AnyPoseApp {
                 console.log('Prompt:', prompt);
             }
 
+            // 千问始终使用同域代理（解决CORS问题）
+            if (this.config.provider === 'qwen') {
+                console.log('使用本地代理服务器（同域）');
+                // 通过同域代理发送
+                const proxyRequestBody = {
+                    apiKey: currentConfig.apiKey,
+                    body: requestBody
+                };
+                endpoint = `/api/proxy/qwen`;
+                headers = {
+                    'Content-Type': 'application/json'
+                };
+                requestBody = proxyRequestBody;
+            }
+
             // 发送API请求
             const response = await fetch(endpoint, {
                 method: 'POST',
@@ -1578,16 +1666,31 @@ class AnyPoseApp {
             if (!response.ok) {
                 // 尝试读取错误响应体
                 let errorDetail = '';
+                let errorMessage = '';
                 try {
                     const errorResult = await response.clone().json();
                     console.log('Error response:', errorResult);
                     errorDetail = JSON.stringify(errorResult);
+                    // 千问API特定错误信息提取
+                    if (this.config.provider === 'qwen') {
+                        if (errorResult.message) {
+                            errorMessage = errorResult.message;
+                        } else if (errorResult.Code) {
+                            errorMessage = `错误码: ${errorResult.Code}`;
+                        } else if (errorResult.code) {
+                            errorMessage = `错误码: ${errorResult.code}`;
+                        }
+                    }
                 } catch (e) {
                     const errorText = await response.clone().text();
                     console.log('Error response (text):', errorText);
                     errorDetail = errorText;
                 }
-                throw new Error(`API请求失败: ${response.status} ${response.statusText} - ${errorDetail}`);
+                if (errorMessage) {
+                    throw new Error(`千问API错误: ${errorMessage} (${response.status})`);
+                } else {
+                    throw new Error(`API请求失败: ${response.status} ${response.statusText} - ${errorDetail}`);
+                }
             }
 
             const result = await response.json();
@@ -1644,6 +1747,38 @@ class AnyPoseApp {
                     imageUrl = response.data[0].url || response.data[0].b64_json;
                     // 如果是base64数据，需要转换
                     if (imageUrl && !imageUrl.startsWith('http')) {
+                        imageUrl = 'data:image/png;base64,' + imageUrl;
+                    }
+                }
+            } else if (this.config.provider === 'qwen') {
+                // 千问多模态API响应格式
+                console.log('千问完整响应:', JSON.stringify(response, null, 2));
+
+                // 尝试多种可能的响应格式
+                if (response.output && response.output.choices && response.output.choices.length > 0) {
+                    // 正确格式：output.choices[0].message.content[0].image
+                    const choice = response.output.choices[0];
+                    console.log('千问 choice:', choice);
+                    if (choice.message && choice.message.content && choice.message.content.length > 0) {
+                        const content = choice.message.content[0];
+                        if (content.image) {
+                            imageUrl = content.image;
+                        } else if (content.text) {
+                            console.log('千问返回文本而非图片:', content.text);
+                        }
+                    }
+                } else if (response.output && response.output.results && response.output.results.length > 0) {
+                    // 备用格式
+                    const result = response.output.results[0];
+                    if (result.url) {
+                        imageUrl = result.url;
+                    } else if (result.image) {
+                        imageUrl = result.image.startsWith('data:') ? result.image : 'data:image/png;base64,' + result.image;
+                    }
+                } else if (response.data && response.data.length > 0) {
+                    // 兼容 OpenAI 格式的响应
+                    imageUrl = response.data[0].url || response.data[0].b64_json;
+                    if (imageUrl && !imageUrl.startsWith('http') && !imageUrl.startsWith('data:')) {
                         imageUrl = 'data:image/png;base64,' + imageUrl;
                     }
                 }
@@ -1970,6 +2105,7 @@ class AnyPoseApp {
                     ...this.config,
                     ...loadedConfig,
                     doubao: { ...this.config.doubao, ...loadedConfig.doubao },
+                    qwen: { ...this.config.qwen, ...loadedConfig.qwen },
                     openai: { ...this.config.openai, ...loadedConfig.openai },
                     stability: { ...this.config.stability, ...loadedConfig.stability }
                 };
@@ -2135,7 +2271,20 @@ class AnyPoseApp {
         if (providerSelect) providerSelect.value = this.config.provider;
         if (apiKeyInput) apiKeyInput.value = currentConfig.apiKey;
         if (endpointInput) endpointInput.value = currentConfig.endpoint;
-        if (modelInput) modelInput.value = currentConfig.model;
+
+        // 动态更新模型选择列表
+        if (modelInput) {
+            const models = this.getModelsForProvider(this.config.provider);
+            modelInput.innerHTML = '';
+            models.forEach(model => {
+                const option = document.createElement('option');
+                option.value = model.value;
+                option.textContent = model.label;
+                modelInput.appendChild(option);
+            });
+            modelInput.value = currentConfig.model;
+        }
+
         if (currentProviderSpan) currentProviderSpan.textContent = this.getProviderDisplayName(this.config.provider);
         if (currentModelSpan) currentModelSpan.textContent = currentConfig.model;
 
@@ -2151,9 +2300,34 @@ class AnyPoseApp {
         }
     }
 
+    getModelsForProvider(provider) {
+        const modelMap = {
+            'doubao': [
+                { value: 'doubao-seedream-5-0-260128', label: 'doubao-seedream-5-0-260128' },
+                { value: 'doubao-seedream-4-5-251128', label: 'doubao-seedream-4-5-251128' }
+            ],
+            'qwen': [
+                { value: 'qwen-image-2.0-pro', label: 'qwen-image-2.0-pro' },
+                { value: 'qwen-image-2.0', label: 'qwen-image-2.0' },
+                { value: 'qwen-image-plus', label: 'qwen-image-plus' },
+                { value: 'qwen-image-flash', label: 'qwen-image-flash' }
+            ],
+            'openai': [
+                { value: 'dall-e-3', label: 'dall-e-3' },
+                { value: 'dall-e-2', label: 'dall-e-2' }
+            ],
+            'stability': [
+                { value: 'stable-diffusion-v1-6', label: 'stable-diffusion-v1-6' },
+                { value: 'stable-diffusion-xl', label: 'stable-diffusion-xl' }
+            ]
+        };
+        return modelMap[provider] || [];
+    }
+
     getProviderDisplayName(provider) {
         const names = {
             'doubao': '豆包AI',
+            'qwen': '千问AI',
             'openai': 'OpenAI',
             'stability': 'Stability AI'
         };
