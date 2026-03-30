@@ -149,10 +149,14 @@ class AnyPoseApp {
                 locateFile: (file) => `https://unpkg.com/@mediapipe/pose/${file}`
             });
             this.pose.setOptions({
-                modelComplexity: 1,
+                // 上传的是单张图片（非持续视频跟踪），开启静态图片模式更适配
+                staticImageMode: true,
+                // 提高复杂度以换取更高检测准确率
+                modelComplexity: 2,
                 smoothLandmarks: true,
-                minDetectionConfidence: 0.5,
-                minTrackingConfidence: 0.5
+                // 对“玩偶/卡通/主体较小”的图放宽阈值，减少检测空结果
+                minDetectionConfidence: 0.3,
+                minTrackingConfidence: 0.3
             });
             this.pose.onResults((results) => this.onPoseResults(results));
         } catch (error) {
@@ -438,10 +442,11 @@ class AnyPoseApp {
             ];
 
             this.currentPoseData.forEach((p) => {
-                if (p.x < 0.05) p.x = 0.05;
-                if (p.x > 0.95) p.x = 0.95;
-                if (p.y < 0.05) p.y = 0.05;
-                if (p.y > 0.95) p.y = 0.95;
+                // 放宽边界限制：避免关键点被过早“钳”回导致骨长变短
+                if (p.x < 0.02) p.x = 0.02;
+                if (p.x > 0.98) p.x = 0.98;
+                if (p.y < 0.02) p.y = 0.02;
+                if (p.y > 0.98) p.y = 0.98;
             });
 
             this.originalPoseData = this.currentPoseData.map(p => ({ ...p }));
@@ -453,6 +458,16 @@ class AnyPoseApp {
             this.updatePlaceholderVisibility();
 
             this.render();
+        }
+        else {
+            // 未检测到人体骨架：停止处理，并保持骨架占位符可见
+            const shouldToast = this.isProcessing;
+            this.isProcessing = false;
+            this.updatePlaceholderVisibility();
+            this.render();
+            if (shouldToast) {
+                this.showToast('未检测到人体骨架（可能是玩偶/角度/主体过小）。可尝试裁剪放大主体。', 'warning');
+            }
         }
     }
 
@@ -971,10 +986,11 @@ class AnyPoseApp {
         }
 
         // 内部辅助函数：解算两个骨架的联动 (比如 肩 -> 肘 -> 腕)
-        const solve2Bone = (rootIdx, midIdx, endIdx, len1, len2, tx, ty) => {
+        const solve2Bone = (rootIdx, midIdx, endIdx, len1, len2, tx, ty, stretchFactor = 1.25) => {
             const root = p[rootIdx];
             let end = { x: tx, y: ty };
-            const maxLen = len1 + len2;
+            // 给两段联动一点“弹性”，避免拖到画面边缘时手/脚明显卡住
+            const maxLen = (len1 + len2) * stretchFactor;
             let dRootEnd = Math.max(0.0001, dist(root, end));
 
             // 限制 1：最大伸展距离限制（防拉长）
@@ -1018,12 +1034,20 @@ class AnyPoseApp {
             }
         };
 
-        // 内部辅助函数：严格限制（无弹性，用于四肢）
-        const solve1BoneStrict = (rootIdx, endIdx, len, tx, ty) => {
+        // 内部辅助函数：允许小幅拉伸（用于肘/膝，避免卡得太死）
+        const solve1BoneStrict = (rootIdx, endIdx, len, tx, ty, stretchFactor = 1.2) => {
             const root = p[rootIdx];
             const d = Math.max(0.0001, dist(root, {x: tx, y: ty}));
-            p[endIdx].x = root.x + (tx - root.x) * (len / d);
-            p[endIdx].y = root.y + (ty - root.y) * (len / d);
+            const maxLen = len * stretchFactor;
+
+            if (d <= maxLen) {
+                p[endIdx].x = tx;
+                p[endIdx].y = ty;
+            } else {
+                // 超过限制，固定在最大长度处（按比例缩回去）
+                p[endIdx].x = root.x + (tx - root.x) * (maxLen / d);
+                p[endIdx].y = root.y + (ty - root.y) * (maxLen / d);
+            }
         };
 
         // 根据你鼠标拖拽的是哪个点，调用对应的联动逻辑 (OpenPose 20点索引)
